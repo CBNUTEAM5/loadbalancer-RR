@@ -52,7 +52,7 @@ request_queue queue = {
 };
 
 
-CacheEntry cache[5]; 
+CacheEntry cache[1]; 
 int cache_count = 0;
 pthread_mutex_t cache_lock = PTHREAD_MUTEX_INITIALIZER;
 
