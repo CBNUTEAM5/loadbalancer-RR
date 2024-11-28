@@ -12,8 +12,8 @@
 #define BUFFER_SIZE 1024
 #define THREAD_POOL_SIZE 4
 #define QUEUE_SIZE 10
-#define ROOT_DIR "./www" // 정적 파일 루트 디렉토리
-#define UPLOAD_DIR "./upload" // 업로드한 파일이 저장되는 디렉토리
+#define ROOT_DIR "./www"
+#define UPLOAD_DIR "./upload"
 
 typedef struct {
     int client_socket;
@@ -24,16 +24,13 @@ int queue_front = 0, queue_rear = 0, queue_count = 0;
 pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t queue_not_empty = PTHREAD_COND_INITIALIZER;
 pthread_cond_t queue_not_full = PTHREAD_COND_INITIALIZER;
-
 FILE *log_file;
 pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t stats_mutex = PTHREAD_MUTEX_INITIALIZER;
-
 long total_requests = 0;
 double total_response_time = 0;
 long active_connections = 0;
 
-// 로그 기록 함수
 void log_message(const char *message) {
     pthread_mutex_lock(&log_mutex);
     time_t now = time(NULL);
@@ -45,7 +42,6 @@ void log_message(const char *message) {
     pthread_mutex_unlock(&log_mutex);
 }
 
-// 작업 큐에 태스크 추가
 void enqueue_task(Task task) {
     pthread_mutex_lock(&queue_mutex);
     while (queue_count == QUEUE_SIZE) {
@@ -58,7 +54,6 @@ void enqueue_task(Task task) {
     pthread_mutex_unlock(&queue_mutex);
 }
 
-// 작업 큐에서 태스크 제거
 Task dequeue_task() {
     pthread_mutex_lock(&queue_mutex);
     while (queue_count == 0) {
@@ -72,30 +67,8 @@ Task dequeue_task() {
     return task;
 }
 
-// 요청에서 HTTP 메서드 추출
-// GET,POST 구분
-// POST body에서 추출
 void get_http_method(const char *request, char *method) {
     sscanf(request, "%s", method);
-}
-
-// 업로드된 파일 저장
-void save_uploaded_file(const char *body, size_t content_length) {
-    mkdir(UPLOAD_DIR, 0755); // 업로드 디렉토리 생성
-    char filename[BUFFER_SIZE];
-    snprintf(filename, sizeof(filename), "%s/uploaded_file_%ld", UPLOAD_DIR, time(NULL));
-
-    // 업로드된 파일 열기 및 저장
-    int file_fd = open(filename, O_CREAT | O_WRONLY, 0644);
-    if (file_fd == -1) {
-        log_message("500 Internal Server Error: Failed to create upload file.");
-        return;
-    }
-
-    write(file_fd, body, content_length);
-    close(file_fd);
-
-    log_message("File uploaded successfully.");
 }
 
 void handle_post_request(const char *request, int client_socket) {
@@ -106,9 +79,8 @@ void handle_post_request(const char *request, int client_socket) {
         write(client_socket, response, strlen(response));
         return;
     }
-    body += 4; // "\r\n\r\n" 다음으로 이동
+    body += 4;
 
-    // Content-Length 파싱
     const char *content_length_str = strstr(request, "Content-Length: ");
     if (!content_length_str) {
         log_message("411 Length Required: POST request missing Content-Length header.");
@@ -118,7 +90,6 @@ void handle_post_request(const char *request, int client_socket) {
     }
     size_t content_length = atoi(content_length_str + 16);
 
-    // X-Filename 파싱
     const char *filename_str = strstr(request, "X-Filename: ");
     char filename[256] = "uploaded_file";
     if (filename_str) {
@@ -128,54 +99,58 @@ void handle_post_request(const char *request, int client_socket) {
     char filepath[BUFFER_SIZE];
     snprintf(filepath, sizeof(filepath), "%s/%s", UPLOAD_DIR, filename);
 
-    // 파일 저장
     FILE *file = fopen(filepath, "wb");
-    if (!file) {
-        log_message("500 Internal Server Error: Failed to create upload file.");
-        const char *response = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
-        write(client_socket, response, strlen(response));
-        return;
-    }
-
-    size_t bytes_written = fwrite(body, 1, content_length, file);
-    fclose(file);
-
-    if (bytes_written != content_length) {
-        log_message("500 Internal Server Error: Failed to write complete file.");
-        const char *response = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
-        write(client_socket, response, strlen(response));
-        return;
-    }
-
-    char log_message_buffer[BUFFER_SIZE];
-    snprintf(log_message_buffer, sizeof(log_message_buffer), "File uploaded successfully: %s", filename);
-    log_message(log_message_buffer);
-
-    const char *response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 15\r\n\r\nUpload Success!";
+if (!file) {
+    log_message("500 Internal Server Error: Failed to create upload file.");
+    const char *response = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
     write(client_socket, response, strlen(response));
+    return;
 }
-// 요청에서 파일 경로 추출
+
+size_t total_written = 0;
+size_t bytes_to_write = content_length;
+while (total_written < content_length) {
+    size_t bytes_written = fwrite(body + total_written, 1, bytes_to_write, file);
+    if (bytes_written == 0) {
+        if (ferror(file)) {
+            log_message("500 Internal Server Error: Failed to write file.");
+            fclose(file);
+            const char *response = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
+            write(client_socket, response, strlen(response));
+            return;
+        }
+        break;
+    }
+    total_written += bytes_written;
+    bytes_to_write -= bytes_written;
+}
+
+fclose(file);
+
+if (total_written != content_length) {
+    log_message("500 Internal Server Error: Failed to write complete file.");
+    const char *response = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
+    write(client_socket, response, strlen(response));
+    return;
+}
+}
+
 void get_requested_file(const char *request, char *filepath) {
     char url[BUFFER_SIZE];
-
-    // HTTP 요청에서 경로 추출 (예: "GET /index.html HTTP/1.1")
     sscanf(request, "GET %s HTTP/1.1", url);
-
-    // 루트 디렉토리를 기준으로 파일 경로 생성
     snprintf(filepath, BUFFER_SIZE, "%s%s", ROOT_DIR, url);
 
-    // 요청된 경로가 루트 디렉토리를 벗어나는지 확인
-    char real_path[BUFFER_SIZE];
-    realpath(filepath, real_path); // 절대 경로 계산
-    if (strncmp(real_path, ROOT_DIR, strlen(ROOT_DIR)) != 0) {
-        // 루트 디렉토리 밖의 경로로 요청하는 경우 404 처리
+    char *real_path = realpath(filepath, NULL);
+    if (real_path) {
+        if (strncmp(real_path, ROOT_DIR, strlen(ROOT_DIR)) != 0) {
+            snprintf(filepath, BUFFER_SIZE, "%s/404.html", ROOT_DIR);
+        }
+        free(real_path);
+    } else {
         snprintf(filepath, BUFFER_SIZE, "%s/404.html", ROOT_DIR);
     }
 }
 
-
-
-// 클라이언트 요청 처리 함수
 void handle_client(int client_socket) {
     char buffer[BUFFER_SIZE];
     char filepath[BUFFER_SIZE];
@@ -194,43 +169,37 @@ void handle_client(int client_socket) {
         return;
     }
     buffer[bytes_read] = '\0';
-    printf("Request:\n%s\n", buffer);
 
     char method[16];
-    get_http_method(buffer, method); // 요청의 HTTP 메서드 추출
+    get_http_method(buffer, method);
 
     if (strcmp(method, "POST") == 0) {
         handle_post_request(buffer, client_socket);
     } else {
         get_requested_file(buffer, filepath);
-
         if (stat(filepath, &file_stat) == -1 || S_ISDIR(file_stat.st_mode)) {
-            const char *response =
-                "HTTP/1.1 404 Not Found\r\n"
-                "Content-Type: text/plain\r\n"
-                "Content-Length: 13\r\n"
-                "\r\n"
-                "404 Not Found";
+            const char *response = "HTTP/1.1 404 Not Found\r\n"
+                                   "Content-Type: text/plain\r\n"
+                                   "Content-Length: 13\r\n"
+                                   "\r\n"
+                                   "404 Not Found";
             write(client_socket, response, strlen(response));
             log_message("404 Not Found: File not found");
         } else {
             FILE *file = fopen(filepath, "rb");
             if (!file) {
-                const char *response =
-                    "HTTP/1.1 500 Internal Server Error\r\n"
-                    "Content-Type: text/plain\r\n"
-                    "Content-Length: 25\r\n"
-                    "\r\n"
-                    "500 Internal Server Error";
+                const char *response = "HTTP/1.1 500 Internal Server Error\r\n"
+                                       "Content-Type: text/plain\r\n"
+                                       "Content-Length: 25\r\n"
+                                       "\r\n"
+                                       "500 Internal Server Error";
                 write(client_socket, response, strlen(response));
                 log_message("500 Internal Server Error: File open failed");
             } else {
-                const char *header =
-                    "HTTP/1.1 200 OK\r\n"
-                    "Content-Type: text/html\r\n"
-                    "\r\n";
+                const char *header = "HTTP/1.1 200 OK\r\n"
+                                     "Content-Type: text/html\r\n"
+                                     "\r\n";
                 write(client_socket, header, strlen(header));
-
                 char file_buffer[BUFFER_SIZE];
                 size_t bytes;
                 while ((bytes = fread(file_buffer, 1, sizeof(file_buffer), file)) > 0) {
@@ -248,7 +217,6 @@ void handle_client(int client_socket) {
     pthread_mutex_unlock(&stats_mutex);
 }
 
-// 스레드 풀에서 작업 처리
 void *worker_thread(void *arg) {
     while (1) {
         Task task = dequeue_task();
@@ -257,10 +225,10 @@ void *worker_thread(void *arg) {
     return NULL;
 }
 
-
 int main() {
-    mkdir(ROOT_DIR, 0755); // www 디렉토리 생성
-    mkdir(UPLOAD_DIR, 0755); // 업로드 디렉토리 생성
+    mkdir(ROOT_DIR, 0755);
+    mkdir(UPLOAD_DIR, 0755);
+
     int server_socket;
     struct sockaddr_in server_addr, client_addr;
     socklen_t client_addr_len = sizeof(client_addr);
@@ -270,7 +238,6 @@ int main() {
         perror("Failed to open log file");
         exit(EXIT_FAILURE);
     }
-    printf("Server started.\n");
 
     server_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (server_socket == -1) {
@@ -312,15 +279,14 @@ int main() {
         int client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &client_addr_len);
         if (client_socket == -1) {
             perror("Accept failed");
-            log_message("Error: Failed to accept connection.");
-            continue;
-        }
-
-        Task task = {client_socket};
-        enqueue_task(task);
+        log_message("Error: Failed to accept connection.");
+        continue;
     }
+    Task task = {client_socket};
+    enqueue_task(task);
+}
 
-    close(server_socket);
-    fclose(log_file);
-    return 0;
+close(server_socket);
+fclose(log_file);
+return 0;
 }

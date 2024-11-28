@@ -12,7 +12,7 @@
 #define PORTNUM 9100
 #define MAX_CLIENTS 100
 #define NUM_SERVERS 2
-#define QUEUE_SIZE 20
+#define QUEUE_SIZE 100
 #define BUFFER_SIZE 4096
 
 typedef struct {
